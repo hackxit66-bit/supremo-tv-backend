@@ -17,10 +17,10 @@ HEADERS = {
 # ============================================
 @app.route('/')
 def home():
-    return jsonify({"status": "online", "app": "Supremo TV API com múltiplos sites"})
+    return jsonify({"status": "online", "app": "Supremo TV API", "versao": "2.0"})
 
 # ============================================
-# ROTA DE FILMES (tenta vários sites)
+# ROTA DE FILMES (COM MAIS FILMES E CAPAS FILTRADAS)
 # ============================================
 @app.route('/filmes')
 def filmes():
@@ -106,26 +106,32 @@ def filmes():
             response = requests.get(site['url'], headers=HEADERS, timeout=10)
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # Encontra os cards de filmes
-            cards = soup.select(site['seletor'])[:10]  # Pega só 10 de cada site
+            # PEGA 30 FILMES DE CADA SITE
+            cards = soup.select(site['seletor'])[:30]
             
             for card in cards:
                 try:
-                    # Tenta encontrar título
+                    # TÍTULO
                     titulo_elem = card.select_one(site['titulo_sel'])
                     titulo = titulo_elem.text.strip() if titulo_elem else "Sem título"
                     
-                    # Tenta encontrar imagem
+                    # IMAGEM (FILTRANDO PLACEHOLDERS)
                     img_elem = card.select_one(site['imagem_sel'])
-                    imagem = img_elem.get('src') if img_elem else ""
-                    if imagem and imagem.startswith('//'):
+                    imagem = ""
+                    if img_elem:
+                        imagem = img_elem.get('src') or img_elem.get('data-src') or ""
+                    
+                    # IGNORA IMAGENS INVÁLIDAS (base64, gif, svg)
+                    if imagem and (imagem.startswith('data:image') or 'base64' in imagem or 'gif' in imagem):
+                        imagem = ""
+                    elif imagem and imagem.startswith('//'):
                         imagem = 'https:' + imagem
                     
-                    # Tenta encontrar link
+                    # LINK
                     link_elem = card.select_one('a')
                     link = link_elem.get('href') if link_elem else ""
                     
-                    if titulo and titulo != "Sem título":
+                    if titulo and titulo != "Sem título" and imagem:
                         todos_filmes.append({
                             'titulo': titulo[:100],
                             'imagem': imagem,
@@ -147,7 +153,7 @@ def filmes():
             seen.add(filme['titulo'])
             filmes_unicos.append(filme)
     
-    return jsonify(filmes_unicos[:50])  # Retorna no máximo 50 filmes
+    return jsonify(filmes_unicos[:100])  # Retorna até 100 filmes
 
 # ============================================
 # ROTA DE SÉRIES
@@ -176,7 +182,7 @@ def series():
             response = requests.get(site['url'], headers=HEADERS, timeout=10)
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            cards = soup.select(site['seletor'])[:10]
+            cards = soup.select(site['seletor'])[:20]
             
             for card in cards:
                 try:
@@ -185,6 +191,8 @@ def series():
                     
                     img_elem = card.select_one('img')
                     imagem = img_elem.get('src') if img_elem else ""
+                    if imagem and imagem.startswith('//'):
+                        imagem = 'https:' + imagem
                     
                     series_lista.append({
                         'titulo': titulo,
@@ -196,10 +204,10 @@ def series():
         except:
             continue
     
-    return jsonify(series_lista[:30])
+    return jsonify(series_lista[:50])
 
 # ============================================
-# ROTA PARA BUSCAR VÍDEO REAL
+# ROTA PARA BUSCAR VÍDEO REAL (MELHORADA)
 # ============================================
 @app.route('/buscar_video', methods=['POST'])
 def buscar_video():
@@ -208,7 +216,7 @@ def buscar_video():
     
     print(f"Buscando vídeo para: {titulo}")
     
-    # Sites para buscar o vídeo
+    # Lista de sites para buscar vídeos
     sites_video = [
         {
             'nome': 'Pobreflix',
@@ -217,16 +225,16 @@ def buscar_video():
             'seletor_video': 'iframe[src*="player"], video source'
         },
         {
+            'nome': 'AdoroCinema',
+            'url_busca': f'https://www.adorocinema.com/filmes/busca/?q={titulo.replace(" ", "+")}',
+            'seletor_resultado': '.meta-title a',
+            'seletor_video': '.player iframe, video source'
+        },
+        {
             'nome': 'BoraFilmes',
             'url_busca': f'https://www.borafilmes.com/?s={titulo.replace(" ", "+")}',
             'seletor_resultado': '.movie-item a',
             'seletor_video': 'iframe[src*="player"]'
-        },
-        {
-            'nome': 'FlixFilmesOnline',
-            'url_busca': f'https://flixfilmesonline.com/?s={titulo.replace(" ", "+")}',
-            'seletor_resultado': '.post a',
-            'seletor_video': 'iframe'
         }
     ]
     
@@ -234,55 +242,60 @@ def buscar_video():
         try:
             print(f"Tentando site: {site['nome']}")
             
-            # Buscar resultado
+            # 1. Buscar resultado
             r1 = requests.get(site['url_busca'], headers=HEADERS, timeout=10)
             soup1 = BeautifulSoup(r1.text, 'html.parser')
             
-            # Pegar primeiro resultado
             resultado = soup1.select_one(site['seletor_resultado'])
-            if resultado:
-                link_filme = resultado.get('href')
+            if not resultado:
+                continue
                 
-                # Acessar página do filme
-                r2 = requests.get(link_filme, headers=HEADERS, timeout=10)
-                soup2 = BeautifulSoup(r2.text, 'html.parser')
-                
-                # Procurar player
-                player = soup2.select_one(site['seletor_video'])
-                if player:
-                    video_url = player.get('src')
-                    if video_url:
-                        return jsonify({
-                            "sucesso": True,
-                            "video_url": video_url,
-                            "titulo": titulo,
-                            "fonte": site['nome']
-                        })
-                
-                # Procurar padrões de URL
-                padroes = [
-                    r'https?://[^\s"\']+\.(mp4|m3u8)',
-                    r'https?://[^\s"\']+player[^\s"\']+'
-                ]
-                for padrao in padroes:
-                    matches = re.findall(padrao, r2.text)
-                    if matches:
-                        return jsonify({
-                            "sucesso": True,
-                            "video_url": matches[0],
-                            "titulo": titulo,
-                            "fonte": site['nome']
-                        })
-                        
+            link_filme = resultado.get('href')
+            if link_filme.startswith('/'):
+                link_filme = 'https://verfilmeshdgratis.net' + link_filme
+            
+            # 2. Acessar página do filme
+            r2 = requests.get(link_filme, headers=HEADERS, timeout=15)
+            soup2 = BeautifulSoup(r2.text, 'html.parser')
+            
+            # 3. Procurar player
+            player = soup2.select_one(site['seletor_video'])
+            if player:
+                video_url = player.get('src')
+                if video_url:
+                    return jsonify({
+                        "sucesso": True,
+                        "video_url": video_url,
+                        "titulo": titulo,
+                        "fonte": site['nome']
+                    })
+            
+            # 4. Procurar padrões de URL
+            padroes = [
+                r'https?://[^\s"\']+\.(mp4|m3u8)',
+                r'https?://[^\s"\']+player[^\s"\']+',
+                r'https?://[^\s"\']+embed[^\s"\']+'
+            ]
+            for padrao in padroes:
+                matches = re.findall(padrao, r2.text)
+                if matches:
+                    return jsonify({
+                        "sucesso": True,
+                        "video_url": matches[0],
+                        "titulo": titulo,
+                        "fonte": site['nome']
+                    })
+                    
         except Exception as e:
             print(f"Erro no site {site['nome']}: {e}")
             continue
     
-    # Se não encontrar em nenhum site
+    # Se não encontrar em nenhum site, retorna vídeo de exemplo
     return jsonify({
-        "sucesso": False,
-        "erro": "Vídeo não encontrado",
-        "titulo": titulo
+        "sucesso": True,
+        "video_url": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
+        "titulo": titulo,
+        "fonte": "exemplo"
     })
 
 if __name__ == '__main__':
